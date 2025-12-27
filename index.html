@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Digitalización de nóminas — Frontend</title>
+  <!-- Tailwind (estilo corporativo), SheetJS (xlsx parsing), jsPDF + AutoTable -->
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+  <style>
+    /* Pequeños ajustes corporativos */
+    .card-shadow{box-shadow:0 10px 30px rgba(2,6,23,0.06)}
+    .brand-grad{background:linear-gradient(90deg,#0f172a,#0ea5a4)}
+    .table-scroll{max-height:520px;overflow:auto}
+  </style>
+</head>
+<body class="bg-gray-50 font-sans leading-relaxed text-gray-800">
+  <div class="container mx-auto p-6">
+    <header class="flex items-center justify-between mb-6">
+      <div>
+        <h1 class="text-2xl font-semibold text-gray-900">Digitalización de Nóminas</h1>
+        <p class="text-sm text-gray-500">Interfaz corporativa — carga Excel, edición en línea, generación de PDFs y envío a API (SQLite compatible).</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <button id="generateAllPdfBtn" class="px-4 py-2 rounded-md text-white brand-grad card-shadow">Generar PDFs (todos)</button>
+        <button id="loadFromApiBtn" class="px-4 py-2 rounded-md border border-gray-300 bg-white hover:bg-gray-50">Cargar información</button>
+        <button id="switchToLocalBtn" class="px-4 py-2 rounded-md border border-gray-300 bg-white hover:bg-gray-50" style="display:none;">Vista Local</button>
+        <button id="sendToApiBtn" class="px-4 py-2 rounded-md border border-gray-300 bg-white hover:bg-gray-50">Guarda información</button>
+      </div>
+    </header>
+
+    <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <section class="lg:col-span-1 space-y-4">
+        <div class="bg-white p-4 rounded-lg card-shadow">
+          <h3 class="text-lg font-medium">1) Cargar archivo Excel</h3>
+          <input id="fileInput" type="file" accept=".xls,.xlsx" class="mt-3 w-full text-sm text-gray-600">
+          <p class="text-xs text-gray-500 mt-2">Columnas esperadas (cualquiera de estas variaciones): <code>Nombre completo</code>, <code>RFC</code>, <code>NumeroSeguroSocial</code>, <code>Puesto</code>, <code>FechaIngreso</code> (YYYY-MM-DD), <code>Sueldo</code>, <code>HorasTrabajadas</code>.</p>
+          <label class="inline-flex items-center mt-3">
+            <input id="hasHeader" type="checkbox" checked class="form-checkbox">
+            <span class="ml-2 text-sm text-gray-600">Archivo con encabezado</span>
+          </label>
+        </div>
+
+        <div class="bg-white p-4 rounded-lg card-shadow">
+          <h3 class="text-lg font-medium">2) Agregar empleado (manual)</h3>
+          <form id="manualForm" class="space-y-2 mt-2">
+            <input id="nombre" class="w-full border rounded px-3 py-2" placeholder="Nombre completo" required>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="IdEmpleado" class="border rounded px-3 py-2" placeholder="IdEmpleado">
+              <input id="rfc" class="border rounded px-3 py-2" placeholder="RFC">
+              <input id="nss" class="border rounded px-3 py-2" placeholder="NSS">
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="puesto" class="border rounded px-3 py-2" placeholder="Puesto">
+              <input id="fechaIngreso" type="date" class="border rounded px-3 py-2" placeholder="Fecha de ingreso">
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="sueldo" type="number" step="0.01" class="border rounded px-3 py-2" placeholder="Sueldo (MXN)">
+              <input id="horas" type="number" class="border rounded px-3 py-2" placeholder="Horas trabajadas">
+            </div>
+            <div class="text-right"><button id="addManualBtn" class="px-4 py-2 bg-teal-600 text-white rounded">Agregar</button></div>
+          </form>
+        </div>
+
+        <div class="bg-white p-4 rounded-lg card-shadow">
+          <h4 class="font-medium">Preferencias</h4>
+          <label class="block text-xs text-gray-500 mt-2">Endpoint API</label>
+          <input id="apiEndpoint" class="w-full border rounded px-3 py-2 mt-1" placeholder="http://localhost:3001/api/employees" value="http://localhost:3001/api/employees">
+          <button id="testApiBtn" class="mt-2 px-3 py-1 text-xs border rounded hover:bg-gray-50">Probar conexión</button>
+          <label class="inline-flex items-center mt-3">
+            <input id="downloadPdf" type="checkbox" checked class="form-checkbox">
+            <span class="ml-2 text-sm text-gray-600">Descargar PDF al generarlo</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="lg:col-span-2">
+        <div class="bg-white p-4 rounded-lg card-shadow">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="text-lg font-medium">Vista previa — Empleados</h3>
+              <p id="rowCount" class="text-sm text-gray-500">Filas: 0</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <input id="searchInput" class="border rounded px-3 py-2 text-sm" placeholder="Buscar por nombre, RFC, puesto...">
+              <select id="pageSize" class="border rounded px-3 py-2 text-sm">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="table-scroll">
+            <table id="dataTable" class="min-w-full text-sm text-left">
+              <thead class="bg-gray-50 sticky top-0">
+                <tr class="text-gray-600">
+                  <th class="p-2">#</th>
+                  <th class="p-2">Nombre</th>
+                  <th class="p-2">IdEmpleado</th>
+                  <th class="p-2">RFC</th>
+                  <th class="p-2">NSS</th>
+                  <th class="p-2">Puesto</th>
+                  <th class="p-2">Fecha ingreso</th>
+                  <th class="p-2">Sueldo</th>
+                  <th class="p-2">Horas</th>
+                  <th class="p-2">Acciones</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y" id="tableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Edit Modal (simple) -->
+    <div id="editModal" class="fixed inset-0 bg-black bg-opacity-40 hidden items-center justify-center z-50">
+      <div class="bg-white w-full max-w-xl p-6 rounded-lg">
+        <h3 class="text-lg font-medium mb-3">Editar empleado</h3>
+        <form id="editForm" class="space-y-2">
+          <input id="edit_nombre" class="w-full border rounded px-3 py-2" placeholder="Nombre completo" required>
+          <div class="grid grid-cols-2 gap-2">
+            <input id="edit_IdEmpleado" class="border rounded px-3 py-2" placeholder="IdEmpleado">
+            <input id="edit_rfc" class="border rounded px-3 py-2" placeholder="RFC">
+            <input id="edit_nss" class="border rounded px-3 py-2" placeholder="NSS">
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <input id="edit_puesto" class="border rounded px-3 py-2" placeholder="Puesto">
+            <input id="edit_fechaIngreso" type="date" class="border rounded px-3 py-2" placeholder="Fecha de ingreso">
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <input id="edit_sueldo" type="number" step="0.01" class="border rounded px-3 py-2" placeholder="Sueldo (MXN)">
+            <input id="edit_horas" type="number" class="border rounded px-3 py-2" placeholder="Horas trabajadas">
+          </div>
+
+          <div class="flex justify-end gap-2 mt-3">
+            <button type="button" id="cancelEdit" class="px-4 py-2 rounded border">Cancelar</button>
+            <button type="submit" class="px-4 py-2 bg-teal-600 text-white rounded">Guardar</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <footer class="text-center text-xs text-gray-500 mt-6">Proyecto universitario — Simulador de digitalización de nóminas</footer>
+  </div>
+
+  <script>
+    // Estado
+    const state = { 
+      employees: [], 
+      filtered: [], 
+      editIndex: null, 
+      loadedFromApi: false,
+      apiEmployees: [] // empleados cargados desde la API
+    };
+
+    // Helpers
+    function normalizeRow(row){
+      return {
+        nombre: row['Nombre'] ?? row['nombre'] ?? row['FullName'] ?? row['Nombre completo'] ?? row['NOMBRE'] ?? row['full name'] ?? '',
+        IdEmpleado: row['IdEmpleado'] ?? row['idEmpleado'] ?? '',
+        rfc: row['RFC'] ?? row['rfc'] ?? '',
+        nss: row['NumeroSeguroSocial'] ?? row['Numero de Seguro Social'] ?? row['nss'] ?? row['NSS'] ?? row['numero de seguro social'] ?? '',
+        puesto: row['Puesto'] ?? row['puesto'] ?? row['role'] ?? '',
+        fechaIngreso: row['FechaIngreso'] ?? row['Fecha de ingreso'] ?? row['fecha'] ?? '',
+        sueldo: Number(row['Sueldo'] ?? row['sueldo'] ?? row['Salario'] ?? row['salario'] ?? 0),
+        horas: Number(row['HorasTrabajadas'] ?? row['Horas'] ?? row['horas'] ?? 0)
+      };
+    }
+
+    function refreshTable(){
+      // Determine which data source to use
+      const dataSource = state.loadedFromApi ? state.apiEmployees : state.employees;
+      
+      // Apply search + pagination (simple client-side)
+      const q = document.getElementById('searchInput').value.trim().toLowerCase();
+      state.filtered = dataSource.filter(e => {
+        if(!q) return true;
+        return (e.nombre||'').toLowerCase().includes(q) || (e.rfc||'').toLowerCase().includes(q) || (e.puesto||'').toLowerCase().includes(q);
+      });
+      const pageSize = Number(document.getElementById('pageSize').value);
+      const body = document.getElementById('tableBody'); body.innerHTML='';
+      state.filtered.slice(0,pageSize).forEach((e,i)=>{
+        const idx = dataSource.indexOf(e);
+        const isApiEmployee = state.loadedFromApi;
+        const tr = document.createElement('tr');
+        
+        // Different actions for API employees vs local employees
+        let actions = '';
+        if (isApiEmployee) {
+          actions = `
+            <button data-action="pdf-api" data-id="${e.id}" data-index="${idx}" class="px-2 py-1 border rounded text-sm mr-2">PDF</button>
+            <button data-action="delete-api" data-id="${e.id}" data-index="${idx}" class="px-2 py-1 border rounded text-sm text-red-600">Eliminar</button>
+          `;
+        } else {
+          actions = `
+            <button data-action="edit" data-index="${idx}" class="px-2 py-1 border rounded text-sm mr-2">Editar</button>
+            <button data-action="pdf" data-index="${idx}" class="px-2 py-1 border rounded text-sm mr-2">PDF</button>
+            <button data-action="del" data-index="${idx}" class="px-2 py-1 border rounded text-sm text-red-600">Eliminar</button>
+          `;
+        }
+        
+        tr.innerHTML = `
+          <td class="p-2">${idx+1}</td>
+          <td class="p-2">${escapeHtml(e.nombre)}</td>
+          <td class="p-2">${escapeHtml(e.IdEmpleado||'')}</td>
+          <td class="p-2">${escapeHtml(e.rfc||'')}</td>
+          <td class="p-2">${escapeHtml(e.nss||'')}</td>
+          <td class="p-2">${escapeHtml(e.puesto||'')}</td>
+          <td class="p-2">${escapeHtml(e.fechaIngreso||'')}</td>
+          <td class="p-2">${e.sueldo != null ? Number(e.sueldo).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2}) : '0.00'}</td>
+          <td class="p-2">${escapeHtml(String(e.horas||''))}</td>
+          <td class="p-2">${actions}</td>
+        `;
+        body.appendChild(tr);
+      });
+      
+      const count = dataSource.length;
+      const source = state.loadedFromApi ? ' (desde API)' : ' (locales)';
+      document.getElementById('rowCount').innerText = `Filas: ${count}${source}`;
+    }
+
+    function escapeHtml(text){ return (text+'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    // Excel parsing
+    document.getElementById('fileInput').addEventListener('change', async (ev)=>{
+      const f = ev.target.files[0]; if(!f) return;
+      const data = await f.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const firstName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[firstName];
+      const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      json.forEach(r => state.employees.push(normalizeRow(r)));
+      refreshTable(); ev.target.value='';
+    });
+
+    // Manual add
+    document.getElementById('manualForm').addEventListener('submit',(ev)=>{
+      ev.preventDefault();
+      const e = {
+        nombre: document.getElementById('nombre').value.trim(),
+        IdEmpleado: document.getElementById('IdEmpleado').value.trim(),
+        rfc: document.getElementById('rfc').value.trim(),
+        nss: document.getElementById('nss').value.trim(),
+        puesto: document.getElementById('puesto').value.trim(),
+        fechaIngreso: document.getElementById('fechaIngreso').value,
+        sueldo: Number(document.getElementById('sueldo').value||0),
+        horas: Number(document.getElementById('horas').value||0)
+      };
+      if(!e.nombre){ alert('El nombre es obligatorio'); return; }
+      state.employees.push(e);
+      ev.target.reset(); refreshTable();
+    });
+
+    // Load from API
+    document.getElementById('loadFromApiBtn').addEventListener('click', async ()=>{
+      const endpoint = document.getElementById('apiEndpoint').value.trim();
+      if(!endpoint){ alert('Proporciona un endpoint de API'); return; }
+      
+      try {
+        // Construir URL correctamente
+        let apiUrl;
+        if (endpoint.endsWith('/api/employees')) {
+          apiUrl = endpoint; // Ya tiene el endpoint completo
+        } else {
+          // Si solo tiene la base URL, agregar el endpoint
+          const baseUrl = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+          apiUrl = `${baseUrl}/api/employees`;
+        }
+        
+        console.log('Intentando cargar desde:', apiUrl);
+        
+        const res = await fetch(apiUrl, { 
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if(!res.ok){ 
+          const errorText = await res.text();
+          throw new Error(`Error ${res.status}: ${errorText || res.statusText}`); 
+        }
+        
+        const apiEmployees = await res.json();
+        
+        // Validar que sea un array
+        if (!Array.isArray(apiEmployees)) {
+          throw new Error('La respuesta no es un array de empleados');
+        }
+        
+        state.apiEmployees = apiEmployees;
+        state.loadedFromApi = true;
+        
+        // Show/hide buttons
+        document.getElementById('loadFromApiBtn').style.display = 'none';
+        document.getElementById('switchToLocalBtn').style.display = 'inline-block';
+        
+        refreshTable();
+        alert(`Cargados ${apiEmployees.length} empleados desde la base de datos`);
+      } catch(err) {
+        console.error('Error completo:', err);
+        alert('Error al cargar desde API: ' + err.message + '\n\nAsegúrate de que el servidor esté corriendo en el puerto correcto.');
+      }
+    });
+
+    // Switch to local view
+    document.getElementById('switchToLocalBtn').addEventListener('click', ()=>{
+      state.loadedFromApi = false;
+      
+      // Show/hide buttons
+      document.getElementById('loadFromApiBtn').style.display = 'inline-block';
+      document.getElementById('switchToLocalBtn').style.display = 'none';
+      
+      refreshTable();
+    });
+
+    // Test API connection
+    document.getElementById('testApiBtn').addEventListener('click', async ()=>{
+      const endpoint = document.getElementById('apiEndpoint').value.trim();
+      if(!endpoint){ alert('Proporciona un endpoint de API'); return; }
+      
+      try {
+        // Construir URL correctamente
+        let baseUrl;
+        if (endpoint.endsWith('/api/employees')) {
+          baseUrl = endpoint.replace('/api/employees', '');
+        } else {
+          baseUrl = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+        }
+        
+        const testUrl = `${baseUrl}/`;
+        console.log('Probando conexión con:', testUrl);
+        
+        const res = await fetch(testUrl, { 
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if(!res.ok){ 
+          throw new Error(`Error ${res.status}: ${res.statusText}`); 
+        }
+        
+        const data = await res.json();
+        alert(`✅ Conexión exitosa!\n\nServidor: ${data.message}\nEndpoints disponibles: ${data.endpoints.join(', ')}`);
+      } catch(err) {
+        console.error(err);
+        alert(`❌ Error de conexión: ${err.message}\n\nVerifica que:\n1. El servidor esté corriendo\n2. El puerto sea correcto (3001)\n3. No haya problemas de CORS`);
+      }
+    });
+
+    // Delegated actions
+    document.getElementById('tableBody').addEventListener('click',(ev)=>{
+      const btn = ev.target.closest('button'); if(!btn) return;
+      const idx = Number(btn.dataset.index);
+      const action = btn.dataset.action;
+      
+      if(action==='del'){ 
+        if(confirm('Eliminar empleado?')){ 
+          state.employees.splice(idx,1); 
+          refreshTable(); 
+        } 
+      }
+      if(action==='pdf'){ 
+        const dataSource = state.loadedFromApi ? state.apiEmployees : state.employees;
+        generatePdfForEmployee(dataSource[idx], idx); 
+      }
+      if(action==='edit'){ 
+        openEditModal(idx); 
+      }
+      if(action==='pdf-api'){ 
+        const employeeId = btn.dataset.id;
+        generatePdfFromApi(employeeId);
+      }
+      if(action==='delete-api'){ 
+        if(confirm('¿Eliminar empleado de la base de datos?')){ 
+          const employeeId = btn.dataset.id;
+          deleteEmployeeFromApi(employeeId);
+        } 
+      }
+    });
+
+    // Edit modal
+    function openEditModal(idx){
+      const e = state.employees[idx];
+      state.editIndex = idx;
+      document.getElementById('edit_nombre').value = e.nombre || '';
+      document.getElementById('edit_IdEmpleado').value = e.IdEmpleado || '';
+      document.getElementById('edit_rfc').value = e.rfc || '';
+      document.getElementById('edit_nss').value = e.nss || '';
+      document.getElementById('edit_puesto').value = e.puesto || '';
+      document.getElementById('edit_fechaIngreso').value = e.fechaIngreso || '';
+      document.getElementById('edit_sueldo').value = Number(e.sueldo||0);
+      document.getElementById('edit_horas').value = Number(e.horas||0);
+      document.getElementById('editModal').classList.remove('hidden');
+      document.getElementById('editModal').classList.add('flex');
+    }
+    document.getElementById('cancelEdit').addEventListener('click',()=>{ closeEditModal(); });
+    function closeEditModal(){ document.getElementById('editModal').classList.add('hidden'); document.getElementById('editModal').classList.remove('flex'); state.editIndex = null; }
+
+    document.getElementById('editForm').addEventListener('submit',(ev)=>{
+      ev.preventDefault();
+      if(state.editIndex == null) return;
+      const idx = state.editIndex;
+      state.employees[idx] = {
+        nombre: document.getElementById('edit_nombre').value.trim(),
+        IdEmpleado: document.getElementById('edit_IdEmpleado').value.trim(),
+        rfc: document.getElementById('edit_rfc').value.trim(),
+        nss: document.getElementById('edit_nss').value.trim(),
+        puesto: document.getElementById('edit_puesto').value.trim(),
+        fechaIngreso: document.getElementById('edit_fechaIngreso').value,
+        sueldo: Number(document.getElementById('edit_sueldo').value||0),
+        horas: Number(document.getElementById('edit_horas').value||0)
+      };
+      closeEditModal(); refreshTable();
+    });
+
+    // Search & page size listeners
+    document.getElementById('searchInput').addEventListener('input', refreshTable);
+    document.getElementById('pageSize').addEventListener('change', refreshTable);
+
+    // Función para calcular datos de nómina
+    function calculateNominaData(emp) {
+      const sueldoBruto = Number(emp.sueldo) || 0;
+      const horas = Number(emp.horas) || 0;
+      const isr = sueldoBruto * 0.25;
+      const imss = sueldoBruto * 0.13;
+      const totalDeducciones = isr + imss;
+      const sueldoNeto = sueldoBruto - totalDeducciones;
+      const diasTrabajados = horas > 0 ? Math.round((horas / 8) * 100) / 100 : 0; // Redondear a 2 decimales
+      
+      return {
+        TotalPercepciones: sueldoBruto,
+        TotalDeducciones: totalDeducciones,
+        TotalNetoPagado: sueldoNeto,
+        Dias_Trabajados: diasTrabajados,
+        IdDepartamento: emp.puesto ? `DEP-${emp.puesto.substring(0, 3).toUpperCase()}` : 'DEP-GEN',
+        Supervisor: 'Supervisor General' // Valor por defecto
+      };
+    }
+
+    // Función para guardar nómina en la API
+    async function saveNominaToApi(emp) {
+      try {
+        const endpoint = document.getElementById('apiEndpoint').value.trim();
+        if (!endpoint) {
+          console.warn('No hay endpoint configurado, no se guardará la nómina');
+          return;
+        }
+
+        // Determinar el IdEmpleado a usar
+        // Prioridad: IdEmpleado del objeto > id del objeto (convertido a string) > generar uno temporal
+        let idEmpleado = emp.IdEmpleado;
+        if (!idEmpleado && emp.id) {
+          idEmpleado = String(emp.id);
+        }
+        if (!idEmpleado) {
+          console.warn('No se puede guardar nómina: empleado sin IdEmpleado ni id', emp);
+          return;
+        }
+
+        // Construir URL correctamente
+        let baseUrl;
+        if (endpoint.endsWith('/api/employees')) {
+          baseUrl = endpoint.replace('/api/employees', '');
+        } else {
+          baseUrl = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+        }
+
+        const nominaUrl = `${baseUrl}/api/nominas`;
+        const nominaData = calculateNominaData(emp);
+
+        const payload = {
+          IdEmpleado: idEmpleado,
+          ...nominaData
+        };
+
+        const res = await fetch(nominaUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          const errorText = await res.text();
+          console.error('Error al guardar nómina:', errorText);
+          return;
+        }
+
+        const result = await res.json();
+        console.log('✅ Nómina guardada:', result);
+      } catch (err) {
+        console.error('Error al guardar nómina en API:', err);
+        // No mostrar alerta al usuario, solo log en consola para no interrumpir el flujo
+      }
+    }
+
+    // Generate PDF
+    async function generatePdfForEmployee(emp, idx){
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+
+      // Encabezado
+      doc.setFontSize(16);
+      doc.text(`NÓMINA — ${emp.nombre || ''}`, 14, 20);
+      doc.setFontSize(11);
+
+      // Datos generales
+      const rows = [
+          ['Nombre completo', emp.nombre||''],
+          ['Número de empleado', emp.IdEmpleado||''],
+          ['RFC', emp.rfc||''],
+          ['Número de seguro social', emp.nss||''],
+          ['Puesto', emp.puesto||''],
+          ['Fecha de ingreso', emp.fechaIngreso||''],
+          ['Sueldo bruto (MXN)', emp.sueldo != null ? Number(emp.sueldo).toFixed(2) : '0.00'],
+          ['Horas trabajadas', emp.horas != null ? String(emp.horas) : '0']
+      ];
+      doc.autoTable({ startY: 30, head: [['Campo','Valor']], body: rows, theme: 'grid' });
+
+      // Cálculos de nómina
+      const sueldoBruto = Number(emp.sueldo) || 0;
+      const isr = sueldoBruto * 0.25;
+      const imss = sueldoBruto * 0.13;
+      const sueldoNeto = sueldoBruto - isr - imss;
+      const salarioDiario = sueldoBruto / 30;
+
+      const calcRows = [
+          ['Salario diario (simulado)', salarioDiario.toFixed(2)],
+          ['ISR (25%)', `-${isr.toFixed(2)}`],
+          ['IMSS (13%)', `-${imss.toFixed(2)}`],
+          ['Sueldo neto a pagar', sueldoNeto.toFixed(2)]
+      ];
+      doc.autoTable({ 
+          startY: doc.lastAutoTable.finalY + 8, 
+          head: [['Concepto','Monto']], 
+          body: calcRows, 
+          theme: 'grid',
+          styles: { halign: 'right' }, 
+          headStyles: { fillColor: [15, 23, 42] } // azul corporativo oscuro
+      });
+
+      // Guardar/descargar
+      const filename = `nomina_${(emp.nombre||'empleado').replace(/[^a-z0-9]/gi,'_').toLowerCase()}_${idx+1}.pdf`;
+      if(document.getElementById('downloadPdf').checked){ doc.save(filename); }
+      
+      // Guardar nómina en la base de datos (siempre intentar si hay IdEmpleado o id)
+      await saveNominaToApi(emp);
+      
+      return doc;
+    }
+
+
+    // Generate PDF from API employee
+    async function generatePdfFromApi(employeeId) {
+      try {
+        const endpoint = document.getElementById('apiEndpoint').value.trim();
+        
+        // Construir URL correctamente
+        let baseUrl;
+        if (endpoint.endsWith('/api/employees')) {
+          baseUrl = endpoint.replace('/api/employees', '');
+        } else {
+          baseUrl = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+        }
+        
+        const apiUrl = `${baseUrl}/api/employees/${employeeId}`;
+        console.log('Generando PDF desde:', apiUrl);
+        
+        const res = await fetch(apiUrl, { 
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if(!res.ok){ 
+          const errorText = await res.text();
+          throw new Error(`Error ${res.status}: ${errorText || res.statusText}`); 
+        }
+        
+        const employee = await res.json();
+        // generatePdfForEmployee ya guarda la nómina automáticamente
+        await generatePdfForEmployee(employee, employeeId);
+      } catch(err) {
+        console.error(err);
+        alert('Error al generar PDF desde API: ' + err.message);
+      }
+    }
+
+    // Delete employee from API
+    async function deleteEmployeeFromApi(employeeId) {
+      try {
+        const endpoint = document.getElementById('apiEndpoint').value.trim();
+        
+        // Construir URL correctamente
+        let baseUrl;
+        if (endpoint.endsWith('/api/employees')) {
+          baseUrl = endpoint.replace('/api/employees', '');
+        } else {
+          baseUrl = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+        }
+        
+        const deleteUrl = `${baseUrl}/api/employees/${employeeId}`;
+        console.log('Eliminando empleado desde:', deleteUrl);
+        
+        const res = await fetch(deleteUrl, { 
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if(!res.ok){ 
+          const errorText = await res.text();
+          throw new Error(`Error ${res.status}: ${errorText || res.statusText}`); 
+        }
+        
+        const result = await res.json();
+        
+        // Remove from local state and refresh
+        state.apiEmployees = state.apiEmployees.filter(emp => emp.id != employeeId);
+        refreshTable();
+        
+        alert(`✅ ${result.message || 'Empleado eliminado correctamente'}`);
+      } catch(err) {
+        console.error('Error completo:', err);
+        alert('❌ Error al eliminar empleado: ' + err.message);
+      }
+    }
+
+    document.getElementById('generateAllPdfBtn').addEventListener('click', async ()=>{
+      const dataSource = state.loadedFromApi ? state.apiEmployees : state.employees;
+      if(dataSource.length===0){ alert('No hay empleados para generar PDF'); return; }
+      
+      if(state.loadedFromApi) {
+        // Generate PDFs for API employees
+        for(let i=0; i<dataSource.length; i++){ 
+          await generatePdfFromApi(dataSource[i].id); 
+        }
+      } else {
+        // Generate PDFs for local employees
+        for(let i=0;i<dataSource.length;i++){ 
+          await generatePdfForEmployee(dataSource[i], i); 
+        }
+      }
+      alert('Generación de PDFs completada.');
+    });
+
+    // Send to API (bulk) — payload compatible con SQLite backend
+    document.getElementById('sendToApiBtn').addEventListener('click', async ()=>{
+      const endpoint = document.getElementById('apiEndpoint').value.trim();
+      if(!endpoint){ alert('Proporciona un endpoint de API'); return; }
+      if(state.employees.length===0){ alert('No hay datos para enviar'); return; }
+      try{
+        const payload = { employees: state.employees };
+        // Nota: no cambiamos headers ni formato — backend en Node.js/Express + sqlite debe aceptar JSON
+        const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if(!res.ok){ const t = await res.text(); throw new Error(t || res.statusText); }
+        alert('Los datos se enviaron correctamente al backend');
+        // Limpiar la lista después de guardar
+        state.employees = [];
+        refreshTable();
+      }catch(err){ console.error(err); alert('Error al enviar: '+err.message); }
+    });
+
+    // Inicializar tabla vacía
+    refreshTable();
+  </script>
+</body>
+</html>
