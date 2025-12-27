@@ -55,13 +55,8 @@ El servidor estará disponible en `http://localhost:3001`
 
 ### Frontend
 
-1. Abrir el archivo `frontend/index.html` en un navegador web
-2. O servir con un servidor local (recomendado):
-   ```bash
-   # Con Python
-   python -m http.server 8000
-   # Luego abrir http://localhost:8000
-   ```
+1. Una vez corriendo el servidor ingresará a
+`http://localhost:3001`
 
 ## API Endpoints
 
